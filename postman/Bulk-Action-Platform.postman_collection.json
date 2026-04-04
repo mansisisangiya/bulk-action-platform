@@ -1,0 +1,127 @@
+{
+  "info": {
+    "name": "Bulk Action Platform",
+    "description": "CRM bulk actions API (Node.js + BullMQ + PostgreSQL)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "bulkActionId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health"
+      }
+    },
+    {
+      "name": "List registered handlers",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/bulk-actions/meta/handlers"
+      }
+    },
+    {
+      "name": "List bulk actions",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/bulk-actions?limit=50&offset=0",
+          "host": ["{{baseUrl}}"],
+          "path": ["bulk-actions"],
+          "query": [
+            { "key": "limit", "value": "50" },
+            { "key": "offset", "value": "0" },
+            { "key": "accountId", "value": "demo-account-1", "disabled": true }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Create bulk update (all contacts for account)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "const j = pm.response.json();",
+              "if (j && j.id) pm.collectionVariables.set('bulkActionId', j.id);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"accountId\": \"demo-account-1\",\n  \"actionType\": \"bulk_update\",\n  \"entityType\": \"contact\",\n  \"payload\": {\n    \"updates\": {\n      \"status\": \"active\"\n    },\n    \"options\": {\n      \"batchSize\": 500,\n      \"dedupeByEmail\": false\n    }\n  }\n}\n"
+        },
+        "url": "{{baseUrl}}/bulk-actions"
+      }
+    },
+    {
+      "name": "Create bulk update (filter by ids + dedupe by email)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"accountId\": \"demo-account-1\",\n  \"actionType\": \"bulk_update\",\n  \"entityType\": \"contact\",\n  \"payload\": {\n    \"updates\": {\n      \"name\": \"Bulk Renamed\"\n    },\n    \"filter\": {\n      \"ids\": []\n    },\n    \"options\": {\n      \"dedupeByEmail\": true,\n      \"batchSize\": 200\n    }\n  }\n}\n"
+        },
+        "url": "{{baseUrl}}/bulk-actions"
+      }
+    },
+    {
+      "name": "Schedule bulk update (future)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"accountId\": \"demo-account-1\",\n  \"actionType\": \"bulk_update\",\n  \"entityType\": \"contact\",\n  \"payload\": {\n    \"updates\": { \"status\": \"inactive\" }\n  },\n  \"scheduledAt\": \"2030-01-15T12:00:00.000Z\"\n}\n"
+        },
+        "url": "{{baseUrl}}/bulk-actions"
+      }
+    },
+    {
+      "name": "Get bulk action (status + progress)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/bulk-actions/{{bulkActionId}}"
+      }
+    },
+    {
+      "name": "Get bulk action stats",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/bulk-actions/{{bulkActionId}}/stats"
+      }
+    },
+    {
+      "name": "Get logs (filter optional)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/bulk-actions/{{bulkActionId}}/logs?limit=100&offset=0",
+          "host": ["{{baseUrl}}"],
+          "path": ["bulk-actions", "{{bulkActionId}}", "logs"],
+          "query": [
+            { "key": "limit", "value": "100" },
+            { "key": "offset", "value": "0" },
+            { "key": "status", "value": "FAILED", "disabled": true }
+          ]
+        }
+      }
+    }
+  ]
+}

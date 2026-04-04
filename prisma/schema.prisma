@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BulkActionStatus {
+  QUEUED
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum LogStatus {
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model BulkAction {
+  id            String           @id @default(uuid())
+  accountId     String           @map("account_id")
+  actionType    String           @map("action_type")
+  entityType    String           @map("entity_type")
+  status        BulkActionStatus @default(QUEUED)
+  payload       Json
+  scheduledAt   DateTime?        @map("scheduled_at")
+  totalCount    Int              @default(0) @map("total_count")
+  processedCount Int             @default(0) @map("processed_count")
+  successCount  Int              @default(0) @map("success_count")
+  failureCount  Int              @default(0) @map("failure_count")
+  skippedCount  Int              @default(0) @map("skipped_count")
+  errorMessage  String?          @map("error_message")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  startedAt     DateTime?        @map("started_at")
+  completedAt   DateTime?        @map("completed_at")
+
+  logs BulkActionLog[]
+
+  @@index([accountId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("bulk_actions")
+}
+
+model BulkActionLog {
+  id           String      @id @default(uuid())
+  bulkActionId String      @map("bulk_action_id")
+  entityId     String      @map("entity_id")
+  entityType   String      @map("entity_type")
+  status       LogStatus
+  reason       String?
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  bulkAction BulkAction @relation(fields: [bulkActionId], references: [id], onDelete: Cascade)
+
+  @@index([bulkActionId, status])
+  @@index([bulkActionId, createdAt])
+  @@map("bulk_action_logs")
+}
+
+model Contact {
+  id        String   @id @default(uuid())
+  accountId String   @map("account_id")
+  name      String
+  email     String
+  age       Int?
+  status    String   @default("active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([accountId, email])
+  @@index([accountId])
+  @@map("contacts")
+}

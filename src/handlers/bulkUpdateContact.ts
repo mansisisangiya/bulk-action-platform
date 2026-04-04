@@ -21,6 +21,7 @@ const payloadSchema = z.object({
   options: z
     .object({
       batchSize: z.number().int().min(1).max(2000).optional(),
+      dedupeByEmail: z.boolean().optional(),
     })
     .optional(),
 });
@@ -46,6 +47,10 @@ function isUniqueConstraintViolation(error: unknown): boolean {
   );
 }
 
+function resolveEmail(updates: BulkUpdateContactPayload["updates"], contact: ContactRow): string {
+  return (updates.email ?? contact.email).toLowerCase();
+}
+
 function logEntry(
   contactId: string,
   status: LogStatus,
@@ -59,12 +64,22 @@ async function updateContact(
   ctx: HandlerContext,
   contact: ContactRow,
   payload: BulkUpdateContactPayload,
+  seenEmails: Set<string>,
 ): Promise<BatchLogEntry> {
+  const shouldDedupe = payload.options?.dedupeByEmail === true;
+  const emailAfterUpdate = resolveEmail(payload.updates, contact);
+
+  if (shouldDedupe && seenEmails.has(emailAfterUpdate)) {
+    return logEntry(contact.id, LogStatus.SKIPPED, "Duplicate email within this bulk action");
+  }
+
   try {
     await prisma.contact.update({
       where: { id: contact.id, accountId: ctx.accountId },
       data: toPrismaUpdate(payload.updates),
     });
+
+    if (shouldDedupe) seenEmails.add(emailAfterUpdate);
     return logEntry(contact.id, LogStatus.SUCCESS);
   } catch (error) {
     if (isUniqueConstraintViolation(error)) {
@@ -88,10 +103,11 @@ export const bulkUpdateContactHandler: BulkActionHandler<BulkUpdateContactPayloa
     ctx: HandlerContext,
     contacts: ContactRow[],
     payload: BulkUpdateContactPayload,
+    seenEmails: Set<string>,
   ): Promise<BatchLogEntry[]> {
     const logs: BatchLogEntry[] = [];
     for (const contact of contacts) {
-      logs.push(await updateContact(ctx, contact, payload));
+      logs.push(await updateContact(ctx, contact, payload, seenEmails));
     }
     return logs;
   },

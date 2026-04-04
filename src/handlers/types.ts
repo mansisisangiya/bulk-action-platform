@@ -33,5 +33,6 @@ export interface BulkActionHandler<TPayload = unknown> {
     ctx: HandlerContext,
     contacts: ContactRow[],
     payload: TPayload,
+    seenEmails: Set<string>,
   ): Promise<BatchLogEntry[]>;
 }

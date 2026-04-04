@@ -6,7 +6,7 @@ import { prisma } from "../lib/prisma.js";
 
 type BulkPayload = {
   filter?: { ids?: string[] };
-  options?: { batchSize?: number };
+  options?: { batchSize?: number; dedupeByEmail?: boolean };
 };
 
 export async function processBulkAction(bulkActionId: string): Promise<void> {
@@ -32,6 +32,7 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
 
   const payload = validatedPayload as BulkPayload;
   const batchSize = payload.options?.batchSize ?? config.defaultBatchSize;
+  const seenEmails = new Set<string>();
 
   await prisma.bulkAction.update({
     where: { id: bulkActionId },
@@ -61,6 +62,7 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
         batchSize,
         handler,
         validatedPayload,
+        seenEmails,
       });
     } else {
       await processFullScan({
@@ -70,6 +72,7 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
         batchSize,
         handler,
         validatedPayload,
+        seenEmails,
       });
     }
 
@@ -93,6 +96,7 @@ type ProcessBatchParams = {
   batchSize: number;
   handler: BulkActionHandler<unknown>;
   validatedPayload: unknown;
+  seenEmails: Set<string>;
 };
 
 type ProcessFilteredIdsParams = ProcessBatchParams & { sortedUniqueIds: string[] };
@@ -105,6 +109,7 @@ async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<voi
     batchSize,
     handler,
     validatedPayload,
+    seenEmails,
   } = params;
 
   await prisma.bulkAction.update({
@@ -125,6 +130,7 @@ async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<voi
         handlerContext,
         contacts,
         validatedPayload,
+        seenEmails,
       );
       await persistLogsAndCounts(bulkActionId, batchLogs);
     }
@@ -141,6 +147,7 @@ async function processFullScan(params: ProcessFullScanParams): Promise<void> {
     batchSize,
     handler,
     validatedPayload,
+    seenEmails,
   } = params;
 
   const totalContacts = await prisma.contact.count({ where: { accountId } });
@@ -168,6 +175,7 @@ async function processFullScan(params: ProcessFullScanParams): Promise<void> {
       handlerContext,
       contacts,
       validatedPayload,
+      seenEmails,
     );
     await persistLogsAndCounts(bulkActionId, batchLogs);
 

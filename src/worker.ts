@@ -3,6 +3,7 @@ import { Redis } from "ioredis";
 import { config } from "./config.js";
 import type { BulkJobData } from "./queue/bulkQueue.js";
 import { processBulkAction } from "./services/bulkActionProcessor.js";
+import { RateLimitExceededError } from "./services/rateLimit.js";
 
 const connection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 
@@ -18,6 +19,10 @@ const worker = new Worker<BulkJobData>(
 );
 
 worker.on("failed", (job, err) => {
+  if (err instanceof RateLimitExceededError) {
+    console.warn(`Job ${job?.id} deferred — ${err.message} (will retry)`);
+    return;
+  }
   console.error(`Job ${job?.id} failed`, err);
 });
 

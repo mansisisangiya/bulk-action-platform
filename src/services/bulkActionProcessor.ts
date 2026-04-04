@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { getHandler } from "../handlers/registry.js";
 import type { BatchLogEntry, BulkActionHandler, ContactRow, HandlerContext } from "../handlers/types.js";
 import { prisma } from "../lib/prisma.js";
+import { RateLimitExceededError, reserveCapacity } from "./rateLimit.js";
 
 type BulkPayload = {
   filter?: { ids?: string[] };
@@ -84,6 +85,9 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
       },
     });
   } catch (error: unknown) {
+    // Rate limit exceeded → let BullMQ retry the job, don't mark it FAILED
+    if (error instanceof RateLimitExceededError) throw error;
+
     const message = error instanceof Error ? error.message : "Processing failed";
     await markFailed(bulkActionId, message);
     throw error;
@@ -121,6 +125,9 @@ async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<voi
     const idChunk = sortedUniqueIds.slice(offset, offset + batchSize);
 
     const { skipLogs, contacts } = await loadBatchForAccount(handlerContext.accountId, idChunk);
+
+    // Reserve capacity for every entity we're about to touch (skips + updates)
+    await reserveCapacity(handlerContext.accountId, skipLogs.length + contacts.length);
 
     if (skipLogs.length > 0) {
       await persistLogsAndCounts(bulkActionId, skipLogs);
@@ -171,6 +178,8 @@ async function processFullScan(params: ProcessFullScanParams): Promise<void> {
     if (contactsPage.length === 0) break;
 
     const contacts = contactsPage as ContactRow[];
+    await reserveCapacity(accountId, contacts.length);
+
     const batchLogs = await handler.processBatch(
       handlerContext,
       contacts,

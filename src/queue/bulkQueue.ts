@@ -24,7 +24,11 @@ export function getBulkQueue(): Queue<BulkJobData> {
   return queue;
 }
 
-export async function enqueueBulkAction(bulkActionId: string): Promise<void> {
+export async function enqueueBulkAction(
+  bulkActionId: string,
+  delayMs?: number,
+): Promise<void> {
   const queue = getBulkQueue();
-  await queue.add("run", { bulkActionId }, { jobId: bulkActionId });
+  const delay = delayMs !== undefined && delayMs > 0 ? delayMs : undefined;
+  await queue.add("run", { bulkActionId }, { jobId: bulkActionId, delay });
 }

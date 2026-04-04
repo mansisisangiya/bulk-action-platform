@@ -1,5 +1,6 @@
 import { BulkActionStatus, type BulkAction, type LogStatus, type Prisma } from "@prisma/client";
 import { z } from "zod";
+import { SCHEDULE_THRESHOLD_MS } from "../constants.js";
 import { getHandler } from "../handlers/registry.js";
 import { prisma } from "../lib/prisma.js";
 import { enqueueBulkAction } from "../queue/bulkQueue.js";
@@ -9,6 +10,11 @@ const createBodySchema = z.object({
   actionType: z.string().min(1),
   entityType: z.string().min(1),
   payload: z.unknown(),
+  /** ISO 8601 date-time (e.g. 2025-11-22T23:15:00.000Z). Omit to run as soon as the worker picks it up. */
+  scheduledAt: z
+    .string()
+    .refine((value) => !Number.isNaN(Date.parse(value)), { message: "Invalid ISO date-time for scheduledAt" })
+    .optional(),
 });
 
 export type CreateBulkActionInput = z.infer<typeof createBodySchema>;
@@ -36,17 +42,37 @@ export async function createBulkAction(raw: unknown): Promise<BulkAction> {
     throw new ValidationError(message);
   }
 
+  let status: BulkActionStatus = BulkActionStatus.QUEUED;
+  let scheduledAt: Date | null = null;
+  let delayMs: number | undefined;
+
+  if (body.scheduledAt !== undefined) {
+    const when = new Date(body.scheduledAt);
+    const untilRunMs = when.getTime() - Date.now();
+
+    if (untilRunMs < 0) {
+      throw new ValidationError("scheduledAt must be in the future");
+    }
+
+    if (untilRunMs > SCHEDULE_THRESHOLD_MS) {
+      status = BulkActionStatus.SCHEDULED;
+      scheduledAt = when;
+      delayMs = untilRunMs;
+    }
+  }
+
   const action = await prisma.bulkAction.create({
     data: {
       accountId: body.accountId,
       actionType: body.actionType,
       entityType: body.entityType,
-      status: BulkActionStatus.QUEUED,
+      status,
       payload: validatedPayload as Prisma.InputJsonValue,
+      scheduledAt,
     },
   });
 
-  await enqueueBulkAction(action.id);
+  await enqueueBulkAction(action.id, delayMs);
 
   return action;
 }

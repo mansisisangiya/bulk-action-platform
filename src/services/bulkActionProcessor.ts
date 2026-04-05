@@ -1,13 +1,15 @@
 import { BulkActionStatus, LogStatus, type Prisma } from "@prisma/client";
 import { config } from "../config.js";
 import { getHandler } from "../handlers/registry.js";
-import type { BatchLogEntry, BulkActionHandler, ContactRow, HandlerContext } from "../handlers/types.js";
+import type { BatchLogEntry, BulkActionHandler, HandlerContext } from "../handlers/types.js";
 import { prisma } from "../lib/prisma.js";
+import { EntityRepository, type EntityRow } from "../repositories/EntityRepository.js";
+import { logger } from "../utils/logger.js";
 import { RateLimitExceededError, reserveCapacity } from "./rateLimit.js";
 
 type BulkPayload = {
   filter?: { ids?: string[] };
-  options?: { batchSize?: number; dedupeByEmail?: boolean };
+  options?: { batchSize?: number };
 };
 
 export async function processBulkAction(bulkActionId: string): Promise<void> {
@@ -33,7 +35,9 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
 
   const payload = validatedPayload as BulkPayload;
   const batchSize = payload.options?.batchSize ?? config.defaultBatchSize;
-  const seenEmails = new Set<string>();
+
+  const entityRepository = new EntityRepository(job.entityType);
+  const handlerState = handler.createState?.() ?? {};
 
   await prisma.bulkAction.update({
     where: { id: bulkActionId },
@@ -47,10 +51,17 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
   const handlerContext: HandlerContext = {
     accountId: job.accountId,
     bulkActionId,
+    entityRepository,
   };
 
+  logger.info("Processing bulk action", {
+    bulkActionId,
+    actionType: job.actionType,
+    entityType: job.entityType,
+    accountId: job.accountId,
+  });
+
   try {
-    // If filter is provided, process filtered IDs, otherwise process full scan for all contacts
     const filterIds = payload.filter?.ids?.length
       ? [...new Set(payload.filter.ids)].sort()
       : null;
@@ -59,21 +70,23 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
       await processFilteredIds({
         bulkActionId,
         handlerContext,
+        entityRepository,
         sortedUniqueIds: filterIds,
         batchSize,
         handler,
         validatedPayload,
-        seenEmails,
+        handlerState,
       });
     } else {
       await processFullScan({
         bulkActionId,
         handlerContext,
+        entityRepository,
         accountId: job.accountId,
         batchSize,
         handler,
         validatedPayload,
-        seenEmails,
+        handlerState,
       });
     }
 
@@ -84,11 +97,13 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
         completedAt: new Date(),
       },
     });
+
+    logger.info("Bulk action completed", { bulkActionId });
   } catch (error: unknown) {
-    // Rate limit exceeded → let BullMQ retry the job, don't mark it FAILED
     if (error instanceof RateLimitExceededError) throw error;
 
     const message = error instanceof Error ? error.message : "Processing failed";
+    logger.error("Bulk action failed", { bulkActionId, error: message });
     await markFailed(bulkActionId, message);
     throw error;
   }
@@ -97,24 +112,18 @@ export async function processBulkAction(bulkActionId: string): Promise<void> {
 type ProcessBatchParams = {
   bulkActionId: string;
   handlerContext: HandlerContext;
+  entityRepository: EntityRepository;
   batchSize: number;
   handler: BulkActionHandler<unknown>;
   validatedPayload: unknown;
-  seenEmails: Set<string>;
+  handlerState: unknown;
 };
 
 type ProcessFilteredIdsParams = ProcessBatchParams & { sortedUniqueIds: string[] };
 
 async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<void> {
-  const {
-    bulkActionId,
-    handlerContext,
-    sortedUniqueIds,
-    batchSize,
-    handler,
-    validatedPayload,
-    seenEmails,
-  } = params;
+  const { bulkActionId, handlerContext, entityRepository, sortedUniqueIds, batchSize, handler, validatedPayload, handlerState } =
+    params;
 
   await prisma.bulkAction.update({
     where: { id: bulkActionId },
@@ -123,22 +132,15 @@ async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<voi
 
   for (let offset = 0; offset < sortedUniqueIds.length; offset += batchSize) {
     const idChunk = sortedUniqueIds.slice(offset, offset + batchSize);
+    const { skipLogs, entities } = await loadBatchForAccount(entityRepository, handlerContext.accountId, idChunk, handler.entityType);
 
-    const { skipLogs, contacts } = await loadBatchForAccount(handlerContext.accountId, idChunk);
-
-    // Reserve capacity for every entity we're about to touch (skips + updates)
-    await reserveCapacity(handlerContext.accountId, skipLogs.length + contacts.length);
+    await reserveCapacity(handlerContext.accountId, skipLogs.length + entities.length);
 
     if (skipLogs.length > 0) {
       await persistLogsAndCounts(bulkActionId, skipLogs);
     }
-    if (contacts.length > 0) {
-      const batchLogs = await handler.processBatch(
-        handlerContext,
-        contacts,
-        validatedPayload,
-        seenEmails,
-      );
+    if (entities.length > 0) {
+      const batchLogs = await handler.processBatch(handlerContext, entities, validatedPayload, handlerState);
       await persistLogsAndCounts(bulkActionId, batchLogs);
     }
   }
@@ -147,78 +149,56 @@ async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<voi
 type ProcessFullScanParams = ProcessBatchParams & { accountId: string };
 
 async function processFullScan(params: ProcessFullScanParams): Promise<void> {
-  const {
-    bulkActionId,
-    handlerContext,
-    accountId,
-    batchSize,
-    handler,
-    validatedPayload,
-    seenEmails,
-  } = params;
+  const { bulkActionId, handlerContext, entityRepository, accountId, batchSize, handler, validatedPayload, handlerState } =
+    params;
 
-  const totalContacts = await prisma.contact.count({ where: { accountId } });
+  const total = await entityRepository.count(accountId);
   await prisma.bulkAction.update({
     where: { id: bulkActionId },
-    data: { totalCount: totalContacts },
+    data: { totalCount: total },
   });
 
   let lastId: string | undefined;
   while (true) {
-    const where: Prisma.ContactWhereInput = { accountId };
-    if (lastId !== undefined) {
-      where.id = { gt: lastId };
-    }
+    const page = await entityRepository.findPage(accountId, lastId, batchSize);
+    if (page.length === 0) break;
 
-    const contactsPage = await prisma.contact.findMany({
-      where,
-      orderBy: { id: "asc" },
-      take: batchSize,
-    });
-    if (contactsPage.length === 0) break;
+    await reserveCapacity(accountId, page.length);
 
-    const contacts = contactsPage as ContactRow[];
-    await reserveCapacity(accountId, contacts.length);
-
-    const batchLogs = await handler.processBatch(
-      handlerContext,
-      contacts,
-      validatedPayload,
-      seenEmails,
-    );
+    const batchLogs = await handler.processBatch(handlerContext, page, validatedPayload, handlerState);
     await persistLogsAndCounts(bulkActionId, batchLogs);
 
-    lastId = contactsPage[contactsPage.length - 1].id;
+    lastId = page[page.length - 1].id;
   }
 }
 
 async function loadBatchForAccount(
+  entityRepository: EntityRepository,
   accountId: string,
   chunk: string[],
-): Promise<{ skipLogs: BatchLogEntry[]; contacts: ContactRow[] }> {
-  const found = await prisma.contact.findMany({
-    where: { id: { in: chunk }, accountId },
-  });
-  const contactById = new Map(found.map((contact) => [contact.id, contact]));
+  entityType: string,
+): Promise<{ skipLogs: BatchLogEntry[]; entities: EntityRow[] }> {
+  const found = await entityRepository.findByIds(accountId, chunk);
+  const byId = new Map(found.map((e) => [e.id, e]));
 
   const skipLogs: BatchLogEntry[] = [];
-  const contacts: ContactRow[] = [];
+  const entities: EntityRow[] = [];
 
-  for (const requestedId of chunk) {
-    const contact = contactById.get(requestedId);
-    if (!contact) {
+  for (const id of chunk) {
+    const entity = byId.get(id);
+    if (!entity) {
       skipLogs.push({
-        entityId: requestedId,
-        entityType: "contact",
+        entityId: id,
+        entityType,
         status: LogStatus.SKIPPED,
-        reason: "Contact not found for this account",
+        reason: `${entityType} not found for this account`,
       });
     } else {
-      contacts.push(contact as ContactRow);
+      entities.push(entity);
     }
   }
 
-  return { skipLogs, contacts };
+  return { skipLogs, entities };
 }
 
 async function persistLogsAndCounts(bulkActionId: string, entries: BatchLogEntry[]): Promise<void> {

@@ -1,6 +1,7 @@
 import { BulkActionStatus, type BulkAction, type LogStatus, type Prisma } from "@prisma/client";
 import { z } from "zod";
 import { SCHEDULE_THRESHOLD_MS } from "../constants.js";
+import { ValidationError } from "../error.js";
 import { getHandler } from "../handlers/registry.js";
 import { prisma } from "../lib/prisma.js";
 import { enqueueBulkAction } from "../queue/bulkQueue.js";
@@ -19,12 +20,7 @@ const createBodySchema = z.object({
 
 export type CreateBulkActionInput = z.infer<typeof createBodySchema>;
 
-export class ValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ValidationError";
-  }
-}
+export { ValidationError };
 
 export async function createBulkAction(raw: unknown): Promise<BulkAction> {
   const body = createBodySchema.parse(raw);

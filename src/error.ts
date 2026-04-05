@@ -1,10 +1,16 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
-import { ValidationError } from "./services/bulkActionService.js";
+
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
 
 /**
  * Maps Zod and domain validation errors to 400 responses.
- * Passes everything else to `next(err)` for the generic 500 handler.
+ * Passes everything else to the generic Express 500 handler.
  */
 export function bulkActionsErrorHandler(
   err: unknown,

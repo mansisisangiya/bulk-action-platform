@@ -1,7 +1,21 @@
-import { LogStatus, Prisma } from "@prisma/client";
+import { LogStatus } from "@prisma/client";
 import { z } from "zod";
-import { prisma } from "../lib/prisma.js";
-import type { BatchLogEntry, BulkActionHandler, ContactRow, HandlerContext } from "./types.js";
+import type { BatchLogEntry, BulkActionHandler, EntityRow, HandlerContext } from "./types.js";
+
+// ── Contact-specific types ──────────────────────────────────────────
+
+type ContactEntity = EntityRow & {
+  email: string;
+  name: string;
+  age: number | null;
+  status: string;
+};
+
+type ContactState = {
+  seenEmails: Set<string>;
+};
+
+// ── Zod schemas (contact-specific validation) ───────────────────────
 
 const updatesFieldsSchema = z.object({
   name: z.string().min(1).optional(),
@@ -28,14 +42,14 @@ const payloadSchema = z.object({
 
 export type BulkUpdateContactPayload = z.infer<typeof payloadSchema>;
 
+// ── Helpers ─────────────────────────────────────────────────────────
 
-function toPrismaUpdate(updates: BulkUpdateContactPayload["updates"]): Prisma.ContactUpdateInput {
-  const data: Prisma.ContactUpdateInput = {};
-  if (updates.name !== undefined) data.name = updates.name;
-  if (updates.email !== undefined) data.email = updates.email;
-  if (updates.status !== undefined) data.status = updates.status;
-  if (updates.age !== undefined) data.age = updates.age;
-  return data;
+function resolveEmail(updates: BulkUpdateContactPayload["updates"], contact: ContactEntity): string {
+  return (updates.email ?? contact.email ?? "").toLowerCase();
+}
+
+function logEntry(entityId: string, status: LogStatus, reason?: string): BatchLogEntry {
+  return { entityId, entityType: "contact", status, reason };
 }
 
 function isUniqueConstraintViolation(error: unknown): boolean {
@@ -47,39 +61,23 @@ function isUniqueConstraintViolation(error: unknown): boolean {
   );
 }
 
-function resolveEmail(updates: BulkUpdateContactPayload["updates"], contact: ContactRow): string {
-  return (updates.email ?? contact.email).toLowerCase();
-}
-
-function logEntry(
-  contactId: string,
-  status: LogStatus,
-  reason?: string,
-): BatchLogEntry {
-  return { entityId: contactId, entityType: "contact", status, reason };
-}
-
-
 async function updateContact(
   ctx: HandlerContext,
-  contact: ContactRow,
+  contact: ContactEntity,
   payload: BulkUpdateContactPayload,
-  seenEmails: Set<string>,
+  state: ContactState,
 ): Promise<BatchLogEntry> {
   const shouldDedupe = payload.options?.dedupeByEmail === true;
   const emailAfterUpdate = resolveEmail(payload.updates, contact);
 
-  if (shouldDedupe && seenEmails.has(emailAfterUpdate)) {
+  if (shouldDedupe && state.seenEmails.has(emailAfterUpdate)) {
     return logEntry(contact.id, LogStatus.SKIPPED, "Duplicate email within this bulk action");
   }
 
   try {
-    await prisma.contact.update({
-      where: { id: contact.id, accountId: ctx.accountId },
-      data: toPrismaUpdate(payload.updates),
-    });
+    await ctx.entityRepository.update(contact.id, ctx.accountId, payload.updates as Record<string, unknown>);
 
-    if (shouldDedupe) seenEmails.add(emailAfterUpdate);
+    if (shouldDedupe) state.seenEmails.add(emailAfterUpdate);
     return logEntry(contact.id, LogStatus.SUCCESS);
   } catch (error) {
     if (isUniqueConstraintViolation(error)) {
@@ -90,6 +88,7 @@ async function updateContact(
   }
 }
 
+// ── Exported handler ────────────────────────────────────────────────
 
 export const bulkUpdateContactHandler: BulkActionHandler<BulkUpdateContactPayload> = {
   actionType: "bulk_update",
@@ -99,15 +98,22 @@ export const bulkUpdateContactHandler: BulkActionHandler<BulkUpdateContactPayloa
     return payloadSchema.parse(payload);
   },
 
+  createState(): ContactState {
+    return { seenEmails: new Set<string>() };
+  },
+
   async processBatch(
     ctx: HandlerContext,
-    contacts: ContactRow[],
+    entities: EntityRow[],
     payload: BulkUpdateContactPayload,
-    seenEmails: Set<string>,
+    state: unknown,
   ): Promise<BatchLogEntry[]> {
+    const contactState = state as ContactState;
+    const contacts = entities as ContactEntity[];
+
     const logs: BatchLogEntry[] = [];
     for (const contact of contacts) {
-      logs.push(await updateContact(ctx, contact, payload, seenEmails));
+      logs.push(await updateContact(ctx, contact, payload, contactState));
     }
     return logs;
   },

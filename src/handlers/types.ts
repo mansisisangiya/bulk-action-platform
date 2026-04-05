@@ -1,13 +1,7 @@
 import type { LogStatus } from "@prisma/client";
+import type { EntityRepository, EntityRow } from "../repositories/EntityRepository.js";
 
-export type ContactRow = {
-  id: string;
-  accountId: string;
-  name: string;
-  email: string;
-  age: number | null;
-  status: string;
-};
+export type { EntityRow };
 
 export type BatchLogEntry = {
   entityId: string;
@@ -19,20 +13,30 @@ export type BatchLogEntry = {
 export type HandlerContext = {
   accountId: string;
   bulkActionId: string;
+  entityRepository: EntityRepository;
 };
 
 /**
  * TPayload is the output of validatePayload — one source of truth per action.
- * Registry code uses BulkActionHandler<unknown> because each handler has a different payload shape.
+ *
+ * Handlers are entity-agnostic at the interface level:
+ *   - createState() lets each handler initialise its own cross-batch state
+ *     (e.g. a dedup Set for contacts) without the processor knowing the shape.
+ *   - processBatch receives generic EntityRow[]; the handler casts internally.
  */
 export interface BulkActionHandler<TPayload = unknown> {
   readonly actionType: string;
   readonly entityType: string;
+
   validatePayload(payload: unknown): TPayload;
+
+  /** Called once per job before any batch. Returns handler-owned state passed to every processBatch call. */
+  createState?(): unknown;
+
   processBatch(
     ctx: HandlerContext,
-    contacts: ContactRow[],
+    entities: EntityRow[],
     payload: TPayload,
-    seenEmails: Set<string>,
+    state: unknown,
   ): Promise<BatchLogEntry[]>;
 }

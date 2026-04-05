@@ -1,0 +1,66 @@
+config:
+  target: "http://localhost:3000"
+  phases:
+    # Warm-up: ramp from 5 → 50 req/s over 30 s
+    - duration: 30
+      arrivalRate: 5
+      rampTo: 50
+      name: "Warm-up"
+    # Sustained load: 50 req/s for 60 s (≈ 3 000 bulk-action creates)
+    - duration: 60
+      arrivalRate: 50
+      name: "Sustained"
+    # Spike: 200 req/s for 15 s
+    - duration: 15
+      arrivalRate: 200
+      name: "Spike"
+  defaults:
+    headers:
+      Content-Type: "application/json"
+  # Fail the test if p99 latency exceeds 2 s or error rate exceeds 1 %
+  ensure:
+    p99: 2000
+    maxErrorRate: 1
+
+scenarios:
+  # ── Create + poll flow ───────────────────────────────────────────────────────
+  - name: "Create bulk action and poll status"
+    weight: 70
+    flow:
+      - post:
+          url: "/bulk-actions"
+          json:
+            accountId: "demo-account-1"
+            actionType: "bulk_update"
+            entityType: "contact"
+            payload:
+              updates:
+                status: "active"
+              options:
+                batchSize: 500
+                dedupeByEmail: true
+          capture:
+            - json: "$.id"
+              as: "actionId"
+      - think: 1
+      - get:
+          url: "/bulk-actions/{{ actionId }}"
+      - get:
+          url: "/bulk-actions/{{ actionId }}/stats"
+
+  # ── List actions flow ────────────────────────────────────────────────────────
+  - name: "List bulk actions"
+    weight: 20
+    flow:
+      - get:
+          url: "/bulk-actions"
+          qs:
+            accountId: "demo-account-1"
+            limit: 20
+
+  # ── Health check ─────────────────────────────────────────────────────────────
+  - name: "Health check"
+    weight: 10
+    flow:
+      - get:
+          url: "/health"

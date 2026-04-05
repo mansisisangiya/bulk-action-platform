@@ -1,198 +1,69 @@
 # Bulk Action Platform
 
-A scalable bulk action platform for CRM entities, built with Node.js and TypeScript. Processes thousands of entity updates per minute with batch processing, per-entity logging, and real-time progress tracking.
+A scalable bulk action engine for CRM entities. Accepts a request, queues it, and processes thousands of entity updates asynchronously with real-time progress, per-entity audit logs, rate limiting, and scheduled execution.
 
-## Architecture
+> **Architecture & design decisions** → [TECH_DESIGN.md](./docs/TECH_DESIGN.md)
 
-![Architecture](docs/architecture.png)
-
-The system separates the **API** (accepts requests, returns status) from the **Worker** (processes jobs asynchronously). This allows horizontal scaling: add more workers to handle higher throughput without affecting API latency.
-
-![Request Flow](docs/request-flow.png)
-
-### Key design decisions
-
-- **Stateless API + stateless workers** — all state lives in PostgreSQL and Redis. Any API or worker instance can handle any request/job.
-- **BullMQ on Redis** — reliable job queue with retries, exponential backoff, and concurrency control.
-- **Batch processing** — entities are processed in configurable chunks (default 500) to manage memory and DB load.
-- **Keyset pagination** — full-account scans use `WHERE id > lastId` instead of `OFFSET`, which stays fast at any table size.
-- **Denormalized counters** — success/failure/skipped counts are updated per batch on the job row, so the stats API reads one row instead of counting millions of logs.
-- **Handler registry** — new bulk actions are added by implementing a `BulkActionHandler` interface and registering it. No changes to the processor or API routes required.
+---
 
 ## Tech Stack
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| Runtime | Node.js 20+ | Required by spec |
-| Language | TypeScript | Type safety, better DX |
-| API | Express | Simple, mature, widely understood |
-| Database | PostgreSQL | JSONB for flexible payloads, strong indexing |
-| ORM | Prisma | Type-safe queries, schema-first migrations |
-| Queue | BullMQ + Redis | Reliable async processing with retries |
-| Validation | Zod | Runtime validation + TypeScript type inference |
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js 20+ / TypeScript |
+| API | Express |
+| Queue | BullMQ + Redis |
+| Database | PostgreSQL (Prisma ORM) |
+| Validation | Zod |
 
-## Project Structure
+---
 
-```
-src/
-├── config.ts              # Environment config
-├── error.ts               # Express error-handling middleware
-├── index.ts               # API server entry point
-├── worker.ts              # BullMQ worker entry point
-├── handlers/
-│   ├── types.ts           # BulkActionHandler interface
-│   ├── registry.ts        # Handler lookup by actionType + entityType
-│   └── bulkUpdateContact.ts  # bulk_update:contact implementation
-├── lib/
-│   ├── prisma.ts          # PrismaClient singleton
-│   └── redis.ts           # Redis singleton
-├── queue/
-│   └── bulkQueue.ts       # BullMQ queue setup + enqueue helper
-├── routes/
-│   └── bulkActions.ts     # Express routes for /bulk-actions
-└── services/
-    ├── bulkActionService.ts    # Create, list, get, stats, logs
-    └── bulkActionProcessor.ts  # Core batch processing engine
-```
+## Quick Start
 
-## Prerequisites
-
-- **Node.js** >= 20
-- **Docker** (for PostgreSQL and Redis)
-
-## Getting Started
-
-### 1. Clone and install
+**Prerequisites:** Node.js ≥ 20 and Docker.
 
 ```bash
-git clone git@github.com:mansisisangiya/bulk-action-platform.git
+# 1. Clone the repository
+git clone https://github.com/mansisisangiya/bulk-action-platform.git
 cd bulk-action-platform
+
+# 2. Install dependencies
 npm install
-```
 
-### 2. Start infrastructure
-
-```bash
+# 3. Start PostgreSQL + Redis
 docker compose up -d
-```
 
-This starts PostgreSQL (port 5432) and Redis (port 6379) with persistent volumes.
-
-### 3. Configure environment
-
-```bash
+# 4. Copy environment file (defaults work out of the box)
 cp .env.example .env
-```
 
-Default values work with the Docker setup. Edit `.env` if needed.
-
-### 4. Run database migrations
-
-```bash
+# 5. Run migrations and seed ~2500 demo contacts
 npm run db:migrate
-```
-
-### 5. Seed demo data
-
-```bash
 npm run db:seed
-```
 
-Creates ~2500 sample contacts under `demo-account-1`.
-
-### 6. Start the application
-
-You need **two terminals**:
-
-```bash
-# Terminal 1 — API server
+# 6. Start API server (Terminal 1)
 npm run dev
 
-# Terminal 2 — Background worker
+# 7. Start background worker (Terminal 2)
 npm run dev:worker
 ```
 
-API runs at `http://localhost:3000`.
+API is available at `http://localhost:3000`.
 
-## API Endpoints
+---
 
-### `GET /health`
+## API Reference
 
-Health check.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check + queue depth |
+| `POST` | `/bulk-actions` | Create a bulk action |
+| `GET` | `/bulk-actions` | List all bulk actions |
+| `GET` | `/bulk-actions/:id` | Get status + progress |
+| `GET` | `/bulk-actions/:id/stats` | Success/failure/skipped counts |
+| `GET` | `/bulk-actions/:id/logs` | Per-entity audit logs (paginated) |
+| `GET` | `/bulk-actions/meta/handlers` | List registered action handlers |
 
-### `GET /bulk-actions/meta/handlers`
-
-Lists all registered handlers (useful for checking extensibility).
-
-### `POST /bulk-actions`
-
-Create a new bulk action.
-
-```json
-{
-  "accountId": "demo-account-1",
-  "actionType": "bulk_update",
-  "entityType": "contact",
-  "payload": {
-    "updates": {
-      "status": "active"
-    },
-    "options": {
-      "batchSize": 500
-    }
-  }
-}
-```
-
-**With filtered IDs** (update specific contacts only):
-
-```json
-{
-  "accountId": "demo-account-1",
-  "actionType": "bulk_update",
-  "entityType": "contact",
-  "payload": {
-    "updates": {
-      "name": "Bulk Renamed"
-    },
-    "filter": {
-      "ids": ["uuid-1", "uuid-2", "uuid-3"]
-    }
-  }
-}
-```
-
-### `GET /bulk-actions`
-
-List all bulk actions. Supports query params: `limit`, `offset`, `accountId`.
-
-### `GET /bulk-actions/:id`
-
-Get bulk action details with progress (0 to 1).
-
-### `GET /bulk-actions/:id/stats`
-
-Get processing statistics:
-
-```json
-{
-  "bulkActionId": "...",
-  "totalCount": 2500,
-  "processedCount": 2500,
-  "successCount": 2480,
-  "failureCount": 5,
-  "skippedCount": 15,
-  "status": "COMPLETED"
-}
-```
-
-### `GET /bulk-actions/:id/logs`
-
-Paginated per-entity logs. Supports query params: `status` (SUCCESS/FAILED/SKIPPED), `limit`, `offset`.
-
-## Testing with curl
-
-**Create a bulk action:**
+### Create a Bulk Action
 
 ```bash
 curl -X POST http://localhost:3000/bulk-actions \
@@ -207,61 +78,109 @@ curl -X POST http://localhost:3000/bulk-actions \
   }'
 ```
 
-**Check progress** (replace `<id>` with the returned id):
+**Update specific contacts only** (pass `filter.ids`):
+
+```json
+{
+  "accountId": "demo-account-1",
+  "actionType": "bulk_update",
+  "entityType": "contact",
+  "payload": {
+    "updates": { "name": "Renamed" },
+    "filter": { "ids": ["uuid-1", "uuid-2"] }
+  }
+}
+```
+
+**Schedule for a future time** (pass `scheduledAt` in ISO 8601):
+
+```json
+{
+  "accountId": "demo-account-1",
+  "actionType": "bulk_update",
+  "entityType": "contact",
+  "scheduledAt": "2025-11-22T23:15:00.000Z",
+  "payload": { "updates": { "status": "inactive" } }
+}
+```
+
+### Poll Progress
 
 ```bash
 curl http://localhost:3000/bulk-actions/<id>
+# returns: { "status": "RUNNING", "progress": 0.42, ... }
 ```
 
-**Get stats:**
+### Get Stats
 
 ```bash
 curl http://localhost:3000/bulk-actions/<id>/stats
 ```
 
-**Get failed logs:**
+```json
+{
+  "bulkActionId": "...",
+  "totalCount": 2500,
+  "processedCount": 2500,
+  "successCount": 2480,
+  "failureCount": 5,
+  "skippedCount": 15,
+  "status": "COMPLETED"
+}
+```
+
+### Get Per-Entity Logs
 
 ```bash
-curl "http://localhost:3000/bulk-actions/<id>/logs?status=FAILED"
+# Filter by status: SUCCESS | FAILED | SKIPPED
+curl "http://localhost:3000/bulk-actions/<id>/logs?status=FAILED&limit=50"
 ```
 
-## Testing with Postman
+---
 
-Import `postman/Bulk-Action-Platform.postman_collection.json` into Postman. The collection includes pre-configured requests for all endpoints.
+## Postman Collection
 
-## Database Schema
+Import `postman/Bulk-Action-Platform.postman_collection.json` into Postman. All endpoints are pre-configured with example payloads.
 
-Three tables:
+> [postman-list.png](./docs/postman-list.png)
 
-- **`bulk_actions`** — job metadata, payload (JSONB), status lifecycle, denormalized counters.
-- **`bulk_action_logs`** — per-entity audit trail (SUCCESS/FAILED/SKIPPED + reason).
-- **`contacts`** — sample CRM entity with unique constraint on `(account_id, email)`.
+---
 
-See `prisma/schema.prisma` for the full schema.
+## Project Structure
 
-## Adding a New Bulk Action
-
-1. Create a handler file in `src/handlers/` implementing `BulkActionHandler<TPayload>`:
-
-```typescript
-export const myHandler: BulkActionHandler<MyPayload> = {
-  actionType: "my_action",
-  entityType: "contact",
-  validatePayload(payload) { /* Zod or manual validation */ },
-  async processBatch(ctx, contacts, payload) { /* your logic */ },
-};
+```
+src/
+├── index.ts                        # API server entry point
+├── worker.ts                       # BullMQ worker entry point
+├── config.ts                       # Environment config
+├── constants.ts                    # Shared constants
+├── error.ts                        # Express error-handling middleware
+├── handlers/
+│   ├── types.ts                    # BulkActionHandler interface
+│   ├── registry.ts                 # Handler lookup by actionType + entityType
+│   └── bulkUpdateContact.ts        # bulk_update:contact implementation
+├── controllers/
+│   └── BulkActionController.ts     # Route handlers
+├── middleware/
+│   └── requestLogger.ts            # Structured request logging
+├── repositories/
+│   └── EntityRepository.ts         # DB access abstraction for entity types
+├── lib/
+│   ├── prisma.ts                   # PrismaClient singleton
+│   └── redis.ts                    # Redis singleton
+├── queue/
+│   └── bulkQueue.ts                # BullMQ queue setup + enqueue helper
+├── routes/
+│   └── bulkActions.ts              # Express routes
+├── services/
+│   ├── bulkActionService.ts        # Create, list, get, stats, logs
+│   ├── bulkActionProcessor.ts      # Core batch processing engine
+│   └── rateLimit.ts                # Redis-based per-account rate limiter
+└── utils/
+    └── logger.ts                   # Structured JSON logger
 ```
 
-2. Register it in `src/handlers/registry.ts`:
-
-```typescript
-const handlers: BulkActionHandler<unknown>[] = [
-  bulkUpdateContactHandler as BulkActionHandler<unknown>,
-  myHandler as BulkActionHandler<unknown>,
-];
-```
-
-No changes needed in the processor, queue, routes, or service layer.
+---
 
 ## Available Scripts
 
@@ -276,8 +195,21 @@ No changes needed in the processor, queue, routes, or service layer.
 | `npm run db:seed` | Seed database with demo contacts |
 | `npm run db:studio` | Open Prisma Studio (DB browser) |
 
-## Production Considerations
+---
 
-- **Horizontal scaling** — run multiple worker instances behind the same Redis queue; BullMQ handles job distribution.
-- **Monitoring** — add Bull Board or similar for queue visibility.
-- **Connection pooling** — tune Prisma's connection pool size based on worker concurrency.
+## Adding a New Bulk Action
+
+1. Create `src/handlers/myHandler.ts` implementing `BulkActionHandler<TPayload>`.
+2. Register it in `src/handlers/registry.ts`.
+
+No changes to routes, processor, or service layer. See [TECH_DESIGN.md → Extensibility](./TECH_DESIGN.md#extensibility--handler-registry) for details.
+
+---
+
+## Running Tests
+
+```bash
+npm test
+```
+
+Tests cover the rate limiter (Lua script correctness), batch processor logic, and handler registry.

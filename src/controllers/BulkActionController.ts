@@ -7,7 +7,7 @@ import {
   listBulkActions,
 } from "../services/bulkActionService.js";
 
-// ─── List ─────────────────────────────────────────────────────────────────────
+// ─── List Bulk Actions ─────────────────────────────────────────────────────────
 
 export async function list(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -22,7 +22,7 @@ export async function list(req: Request, res: Response, next: NextFunction): Pro
   }
 }
 
-// ─── Create (JSON body) ───────────────────────────────────────────────────────
+// ─── Create Bulk Action ───────────────────────────────────────────────────────
 
 export async function create(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -33,7 +33,7 @@ export async function create(req: Request, res: Response, next: NextFunction): P
   }
 }
 
-// ─── Get one ──────────────────────────────────────────────────────────────────
+// ─── Get Bulk Action ──────────────────────────────────────────────────────────────────
 
 export async function getOne(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -49,7 +49,7 @@ export async function getOne(req: Request, res: Response, next: NextFunction): P
   }
 }
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
+// ─── Get Bulk Action Stats ──────────────────────────────────────────────────────
 
 export async function stats(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -65,7 +65,7 @@ export async function stats(req: Request, res: Response, next: NextFunction): Pr
   }
 }
 
-// ─── Logs ─────────────────────────────────────────────────────────────────────
+// ─── Get Bulk Action Logs ───────────────────────────────────────────────────────
 
 export async function logs(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

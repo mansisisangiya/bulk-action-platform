@@ -15,7 +15,9 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "load:test": "artillery run tests/load/bulk-action.yml",
+    "load:test:report": "artillery run --output tests/load/report.json tests/load/bulk-action.yml && artillery report tests/load/report.json"
   },
   "engines": {
     "node": ">=20"

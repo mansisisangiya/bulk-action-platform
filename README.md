@@ -162,7 +162,7 @@ src/
 ├── controllers/
 │   └── BulkActionController.ts     # Route handlers
 ├── middleware/
-│   └── requestLogger.ts            # Structured request logging
+│   └── requestLogger.ts            # Request timing logs (Winston)
 ├── repositories/
 │   └── EntityRepository.ts         # DB access abstraction for entity types
 ├── lib/
@@ -177,7 +177,7 @@ src/
 │   ├── bulkActionProcessor.ts      # Core batch processing engine
 │   └── rateLimit.ts                # Redis-based per-account rate limiter
 └── utils/
-    └── logger.ts                   # Structured JSON logger
+    └── logger.ts                   # Winston → console (JSON in prod)
 ```
 
 ---
@@ -202,7 +202,7 @@ src/
 1. Create `src/handlers/myHandler.ts` implementing `BulkActionHandler<TPayload>`.
 2. Register it in `src/handlers/registry.ts`.
 
-No changes to routes, processor, or service layer. See [TECH_DESIGN.md → Extensibility](./TECH_DESIGN.md#extensibility--handler-registry) for details.
+Usually you only add a handler and register it. Details: [Extensibility in TECH_DESIGN.md](./docs/TECH_DESIGN.md#7-extensibility--handler-registry).
 
 ---
 
@@ -212,4 +212,3 @@ No changes to routes, processor, or service layer. See [TECH_DESIGN.md → Exten
 npm test
 ```
 
-Tests cover the rate limiter (Lua script correctness), batch processor logic, and handler registry.

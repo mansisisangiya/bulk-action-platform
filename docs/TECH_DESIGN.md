@@ -23,7 +23,7 @@ CRM platforms need to apply the same operation (e.g. update a field, tag contact
 - A single failure shouldn't abort the entire job.
 - The client needs to know what happened to each individual entity.
 
-**Requirements derived from these constraints:**
+**In scope for this project:**
 
 - Accept a bulk action request and return immediately with a job ID.
 - Process entities asynchronously in the background.
@@ -88,7 +88,7 @@ CRM platforms need to apply the same operation (e.g. update a field, tag contact
 
 ### Separation of Concerns
 
-The API and Worker are **two separate processes**. The API never touches business logic. The Worker never accepts HTTP traffic. All shared state lives in PostgreSQL and Redis — both processes are fully stateless, enabling horizontal scaling of each independently.
+The API and worker are **two separate processes**. The API validates input, persists the job row, and enqueues work; the worker runs batch processing and handlers. The worker does not serve HTTP. Shared state is PostgreSQL and Redis, so you can run multiple API or worker processes pointed at the same backing services.
 
 ---
 
@@ -198,7 +198,7 @@ processBulkAction(bulkActionId)
 │     ├─ For each chunk:
 │     │   ├─ SELECT WHERE id IN (chunk) AND account_id = :accountId
 │     │   ├─ IDs not found → SKIPPED log entries
-│     │   ├─ reserveCapacity(accountId, batchSize)   ← rate limit gate
+│     │   ├─ reserveCapacity(accountId, skipLogs + entities)   ← rate limit gate
 │     │   └─ handler.processBatch(entities)
 │     └─ persistLogsAndCounts()                      ← atomic transaction
 │
@@ -264,7 +264,7 @@ Client                    API Server                  PostgreSQL       Redis
   │◄─── 201 { id, status: "QUEUED" } ──────────────────────               │
 ```
 
-Total API response time: **< 50 ms** (one DB write + one Redis write).
+Typical create latency: one DB insert + one Redis enqueue (exact ms depends on machine and load).
 
 ### 4.2 Worker Processing
 
@@ -367,28 +367,32 @@ The handler's `validatePayload` is called at **creation time** (API) and again a
 
 ### Rate Limit → Retry, Not Fail
 
-When the per-account rate limit is exceeded mid-batch, `RateLimitExceededError` is thrown. The worker catches this specifically and **re-throws** without marking the job as `FAILED`. BullMQ's exponential backoff (2 s, 4 s, 8 s) reschedules the job automatically. This means rate limiting is transparent to the caller — the job will eventually complete.
+When the per-account rate limit is exceeded mid-batch, `RateLimitExceededError` is thrown. The worker **re-throws** without marking the bulk action `FAILED`. BullMQ retries with exponential backoff (2 s, 4 s, 8 s). The client keeps seeing `RUNNING` / progress until the job finishes or hits a real failure.
 
 ### Worker Concurrency is Tunable Per Replica
 
-`WORKER_CONCURRENCY` (default: 4) controls how many jobs a single worker process handles in parallel. Deploying N replicas gives N × concurrency total parallel jobs — easy to scale without code changes.
+`WORKER_CONCURRENCY` (default: 4) sets how many jobs one worker process runs in parallel. N worker processes with the same Redis queue give up to N × concurrency parallel jobs (BullMQ assigns each job to one worker).
 
 ### No Custom Scheduler Process
 
-Scheduled jobs use BullMQ's built-in `delay` feature. There is no separate cron or scheduler service. Redis manages the delay timer, and the worker picks up the job when it becomes ready. This eliminates an entire class of distributed scheduling bugs.
+Scheduled jobs use BullMQ's `delay`. No separate cron service — Redis holds delayed jobs until they move to `waiting`.
+
+### Row updates: sequential vs `Promise.all`
+
+Per-row work inside `processBatch` is **sequential** for the contact handler when it needs dedupe-by-email or per-row error handling. **`Promise.all`** is used in `listBulkActionLogs` only to run `findMany` and `count` in parallel (independent reads).
 
 ---
 
 ## 7. Extensibility — Handler Registry
 
-New bulk actions require **zero changes** to core infrastructure.
+For a new action, you add a handler and register it — no changes to routes, queue setup, or processor wiring.
 
 **Step 1: Implement the interface**
 
 ```typescript
-// src/handlers/bulkTagContact.ts
+// src/handlers/bulkTagContact.ts (sketch — match signatures in ./types.ts)
 import { z } from "zod";
-import type { BulkActionHandler, BatchLogEntry } from "./types.js";
+import type { BulkActionHandler, BatchLogEntry, EntityRow, HandlerContext } from "./types.js";
 
 const schema = z.object({ tags: z.array(z.string()).min(1) });
 type Payload = z.infer<typeof schema>;
@@ -397,14 +401,21 @@ export const bulkTagContactHandler: BulkActionHandler<Payload> = {
   actionType: "bulk_tag",
   entityType: "contact",
 
-  validatePayload(raw) { return schema.parse(raw); },
+  validatePayload(raw: unknown) {
+    return schema.parse(raw);
+  },
 
-  async processBatch(ctx, contacts, payload): Promise<BatchLogEntry[]> {
-    // apply tags to each contact...
-    return contacts.map(c => ({
+  async processBatch(
+    ctx: HandlerContext,
+    entities: EntityRow[],
+    payload: Payload,
+    _state: unknown,
+  ): Promise<BatchLogEntry[]> {
+    // …call ctx.entityRepository / your logic…
+    return entities.map((c) => ({
       entityId: c.id,
       entityType: "contact",
-      status: "SUCCESS",
+      status: "SUCCESS" as const,
     }));
   },
 };
@@ -446,7 +457,7 @@ Redis Queue
     └─► Worker Replica N  (concurrency=4)
 ```
 
-BullMQ distributes jobs across all connected workers automatically. Scaling is as simple as launching additional worker containers. No code changes. No coordination logic.
+BullMQ hands each job to one worker; start more worker processes (same `REDIS_URL` and queue name) to add capacity.
 
 **In Kubernetes:**
 ```yaml
@@ -470,43 +481,18 @@ The current setup runs a single PostgreSQL instance — sufficient for this scal
 
 Redis can be upgraded to a Sentinel setup (automatic failover) or Cluster (horizontal scale) if the queue volume grows. BullMQ supports both — no code changes needed, just a config update.
 
-### Throughput Estimate
+### Throughput — measured vs not measured
 
-Two separate tiers must be sized independently — the **API tier** (accepting requests) and the
-**worker tier** (processing entities). The Redis queue decouples them so each can scale
-independently without the other becoming a bottleneck.
+The **API** tier was exercised with Artillery on a **local** machine (1 API process, 1 worker, Docker Postgres/Redis). See [`LOAD_TEST.md`](./LOAD_TEST.md) for numbers — peak observed **~480 req/s** with **0% errors** in that run. 
 
-#### API Tier — Request Acceptance (empirically validated ✅)
+The **worker** tier was **not** given a comparable load test in this repo. Real entity throughput depends on:
 
-Artillery load test: 1 API process, 1 worker, local machine (see [`LOAD_TEST.md`](./LOAD_TEST.md)).
+- `defaultBatchSize` / payload `batchSize`
+- Handler path: `bulkUpdateContact` uses **`updateMany` per batch** when the payload does **not** touch unique fields (e.g. email); otherwise **per-row** `update` for correct SKIPPED/FAILED logs on constraint violations
+- `RATE_LIMIT_PER_MINUTE` per account (hard ceiling on entity operations over time)
+- DB and connection pool limits
 
-| Phase | Observed RPS | p50 | p95 | p99 | Failures |
-|-------|-------------|-----|-----|-----|----------|
-| Warm-up (5 → 50 req/s) | 20 → 75 | 3 ms | 5 ms | 22 ms | 0 |
-| Sustained (50 req/s) | ~120 | 2 ms | 4 ms | 13 ms | 0 |
-| Spike (200 req/s) | **480** | 3 ms | 10 ms | **30 ms** | **0** |
-
-**Validated capacity: 480 req/s on a single process, p99 = 30 ms, 0% error rate.**
-
-Horizontal API scaling (stateless, load-balanced):
-
-| API Replicas | Est. RPS | Real ceiling |
-|-------------|----------|-------------|
-| 1 ✅ tested | ~480 | Single event loop |
-| 2 | ~900 | Linear — I/O bound |
-| 4 | ~1,800 | Node.js cluster |
-| 8 | ~3,500 | PostgreSQL writes |
-
-#### Worker Tier — Entity Processing (projected)
-
-| Worker Replicas | Concurrency | Parallel jobs | ~Jobs/min | ~Entities/min |
-|----------------|-------------|---------------|-----------|---------------|
-| 1 ✅ tested | 4 | 4 | ~480 | ~240,000 (per-row) / ~12M (batch SQL) |
-| 2 | 4 | 8 | ~960 | ~480,000 / ~24M |
-| 5 | 4 | 20 | ~2,400 | ~1.2M / ~60M |
-| 20 | 8 | 160 | ~19,200 | ~9.6M / ~480M |
-
-> **Per-row vs batch SQL:** For non-unique fields (status, name, age) the handler issues one `UPDATE … WHERE id IN (…)` per batch instead of one UPDATE per row. This reduces DB round-trips by ~500×. Unique-field updates (email) stay per-row so constraint violations can be isolated per entity.
+Adding worker replicas increases how many **jobs** run in parallel; it does not bypass per-account rate limits.
 
 ---
 

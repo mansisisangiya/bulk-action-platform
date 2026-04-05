@@ -22,7 +22,7 @@ app.get("/", (_req, res) => {
 });
 
 /**
- * Health check — also returns queue depth to decide whether to scale worker replicas up or down (for horizontal scaling).
+ * Health check and queue depth to decide whether to scale worker replicas up or down (for horizontal scaling).
  */
 app.get("/health", async (_req, res) => {
   try {

@@ -5,6 +5,8 @@
 Artillery-based load test validating the API tier's throughput, latency, and stability under
 warm-up, sustained, and spike traffic patterns.
 
+**Scope:** Single laptop, Docker Postgres/Redis, dev `npm run dev`. Good for relative numbers, not a production SLO.
+
 **Test date:** April 2026  
 **Tool:** [Artillery](https://www.artillery.io/) v2  
 **Config:** [`tests/load/bulk-action.yml`](../tests/load/bulk-action.yml)  
@@ -55,7 +57,7 @@ Phase 3 — Spike      (15 s): 200 req/s        sudden burst
 | Total HTTP requests | **16,275** |
 | Virtual users completed | **6,825** |
 | Virtual users failed | **0** |
-| Error rate | **0 %** ✅ |
+| Error rate | 0 % |
 | Peak request rate | **480 req/s** |
 | Avg request rate | **168 req/s** |
 
@@ -67,7 +69,7 @@ Phase 3 — Spike      (15 s): 200 req/s        sudden burst
 | p75 | 4 ms |
 | p90 | 6 ms |
 | p95 | 8.9 ms |
-| **p99** | **30.3 ms** ✅ (threshold: 2,000 ms) |
+| **p99** | **30.3 ms** (threshold in YAML: 2,000 ms) |
 | p999 | 149.9 ms |
 | max | 266 ms |
 
@@ -113,27 +115,20 @@ absorbed the burst without dropping any jobs.
 
 ## Capacity Conclusions
 
-### API Tier (accepting and enqueuing jobs)
+### API tier
 
-| Replicas | Est. RPS | Bottleneck |
-|----------|----------|------------|
-| 1 (tested) | ~480 req/s | Single event loop |
-| 2 | ~900 req/s | Linear for I/O-bound workload |
-| 4 | ~1,800 req/s | Node.js clustering |
-| 8 | ~3,500 req/s | PostgreSQL write capacity |
+Only **one** API process was measured (~480 req/s peak in this run). Extra replicas usually add throughput until something else caps out (Postgres writes, Redis, network); the table below is **not** measured — rough order of magnitude for interviews only.
 
-### Worker Tier (processing jobs)
+| Replicas | Rough RPS (guess) | Eventual bottleneck |
+|----------|-------------------|---------------------|
+| 1 | ~480 (observed) | Single Node event loop |
+| 2+ | sub-linear to linear | Postgres / Redis |
 
-| Replicas | Concurrency | Parallel jobs | ~Throughput |
-|----------|-------------|---------------|-------------|
-| 1 (tested) | 4 | 4 | ~8 jobs/s |
-| 2 | 4 each | 8 | ~16 jobs/s |
-| 4 | 8 each | 32 | ~64 jobs/s |
+### Worker tier
 
-Worker replicas scale linearly — BullMQ distributes jobs atomically via Redis with no
-coordination needed between replicas.
+This Artillery scenario mostly hits **create + poll**, not sustained entity processing at max rate. We did **not** separately stress-test “N workers × M concurrent jobs × full DB write volume.” More worker processes do add parallel **jobs**; BullMQ assigns each job once. Throughput still hits **per-account rate limits** and DB limits.
 
-### Real Production Ceiling
+### Production
 
 Single PostgreSQL: ~2,000–5,000 contact writes/second.  
 Mitigation: PgBouncer connection pooling + read replicas.
@@ -163,14 +158,6 @@ open tests/load/report.json.html
 
 ---
 
-## Relation to Design Throughput Estimates
+## Relation to TECH_DESIGN.md
 
-Section 8 of [`TECH_DESIGN.md`](./TECH_DESIGN.md) contains theoretical throughput projections.
-This test empirically validates the **Dev (1 process)** row:
-
-| Setup | Projected entities/min | Observed |
-|-------|----------------------|---------|
-| Dev, 1 replica, concurrency=4 | ~2,000 | ✅ consistent with rate limit of 10,000/min |
-
-The API tier comfortably exceeds the worker's processing capacity — the Redis queue acts as
-the intended buffer, decoupling acceptance rate from processing rate.
+[`TECH_DESIGN.md`](./TECH_DESIGN.md) §8 states what we **measured** (API via this doc) vs what we **did not** (full worker saturation). This run shows the API can accept and enqueue quickly; the queue buffers when workers fall behind. Per-account `RATE_LIMIT_PER_MINUTE` still caps how fast entities can be processed over time.

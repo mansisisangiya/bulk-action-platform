@@ -9,4 +9,10 @@ export const config = {
   queueName: "bulk-actions",
   /** Max entity operations (success + fail + skip) per account per minute. 0 = no limit. */
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE) || 10_000,
+  /**
+   * Number of jobs this worker process handles in parallel.
+   * Each deployed replica can tune independently via WORKER_CONCURRENCY.
+   * Total system capacity = workerConcurrency × number of running replicas.
+   */
+  workerConcurrency: Number(process.env.WORKER_CONCURRENCY) || 4,
 };

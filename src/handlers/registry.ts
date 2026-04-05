@@ -3,6 +3,7 @@ import type { BulkActionHandler } from "./types.js";
 
 const handlers: BulkActionHandler<unknown>[] = [
   bulkUpdateContactHandler as BulkActionHandler<unknown>,
+  /** add more handlers here for new entities  */
 ];
 
 const handlerKey = (actionType: string, entityType: string) => `${actionType}:${entityType}`;

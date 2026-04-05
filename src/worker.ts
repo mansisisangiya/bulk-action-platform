@@ -15,7 +15,7 @@ const worker = new Worker<BulkJobData>(
   },
   {
     connection,
-    concurrency: 4,
+    concurrency: config.workerConcurrency, 
   },
 );
 
@@ -31,4 +31,7 @@ worker.on("completed", (job) => {
   logger.info(`Job ${job.id} completed`);
 });
 
-logger.info(`Worker started for queue "${config.queueName}"`, { concurrency: 4 });
+logger.info(`Worker started for queue "${config.queueName}"`, {
+  concurrency: config.workerConcurrency, 
+  pid: process.pid,
+});

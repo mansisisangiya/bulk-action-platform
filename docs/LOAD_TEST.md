@@ -9,6 +9,7 @@ warm-up, sustained, and spike traffic patterns.
 **Tool:** [Artillery](https://www.artillery.io/) v2  
 **Config:** [`tests/load/bulk-action.yml`](../tests/load/bulk-action.yml)  
 **Raw results:** [`tests/load/report.json`](../tests/load/report.json)
+[load-test](./load-test-output.png)
 
 ---
 

@@ -142,7 +142,7 @@ curl "http://localhost:3000/bulk-actions/<id>/logs?status=FAILED&limit=50"
 
 Import `postman/Bulk-Action-Platform.postman_collection.json` into Postman. All endpoints are pre-configured with example payloads.
 
-> [postman-list.png](./docs/postman-list.png)
+![Postman collection](./docs/postman/postman-list.png)
 
 ---
 

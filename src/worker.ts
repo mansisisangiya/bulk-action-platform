@@ -32,6 +32,24 @@ worker.on("completed", (job) => {
 });
 
 logger.info(`Worker started for queue "${config.queueName}"`, {
-  concurrency: config.workerConcurrency, 
+  concurrency: config.workerConcurrency,
   pid: process.pid,
 });
+
+/**
+ * Graceful shutdown - drain in-flight jobs before exit
+ */
+async function shutdown(signal: string): Promise<void> {
+  logger.info(`Received ${signal} — draining in-flight jobs before exit...`);
+  try {
+    await worker.close();
+    logger.info("Worker drained. Exiting cleanly.");
+    process.exit(0);
+  } catch (err) {
+    logger.error("Error during graceful shutdown", { error: (err as Error).message });
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));

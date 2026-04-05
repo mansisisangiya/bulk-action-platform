@@ -43,7 +43,11 @@ export async function getOne(req: Request, res: Response, next: NextFunction): P
       res.status(404).json({ error: "Bulk action not found" });
       return;
     }
-    res.json(action);
+    const progress =
+      action.totalCount > 0
+        ? Math.round((action.processedCount / action.totalCount) * 100) / 100
+        : 0;
+    res.json({ ...action, progress });
   } catch (err) {
     next(err);
   }

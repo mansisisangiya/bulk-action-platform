@@ -1,9 +1,5 @@
 import { prisma } from "../lib/prisma.js";
 
-/**
- * Generic row shape — every entity must have at least id + accountId.
- * Handlers cast to their own specific type when they need typed fields.
- */
 export type EntityRow = {
   id: string;
   accountId: string;
@@ -21,15 +17,12 @@ type PrismaModel = {
     where: Record<string, unknown>;
     data: Record<string, unknown>;
   }): Promise<EntityRow>;
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 };
 
-/**
- * Entity-agnostic data access layer.
- * Initialise with the Prisma model name (e.g. "contact") and use without
- * ever referencing a specific entity in the core processing pipeline.
- *
- * Adding a new entity = add the Prisma model, register a handler → done.
- */
 export class EntityRepository {
   private readonly model: PrismaModel;
 
@@ -62,5 +55,9 @@ export class EntityRepository {
 
   update(id: string, accountId: string, data: Record<string, unknown>): Promise<EntityRow> {
     return this.model.update({ where: { id, accountId }, data });
+  }
+
+  updateMany(accountId: string, ids: string[], data: Record<string, unknown>): Promise<{ count: number }> {
+    return this.model.updateMany({ where: { id: { in: ids }, accountId }, data });
   }
 }

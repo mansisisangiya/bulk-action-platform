@@ -16,21 +16,12 @@ export type HandlerContext = {
   entityRepository: EntityRepository;
 };
 
-/**
- * TPayload is the output of validatePayload — one source of truth per action.
- *
- * Handlers are entity-agnostic at the interface level:
- *   - createState() lets each handler initialise its own cross-batch state
- *     (e.g. a dedup Set for contacts) without the processor knowing the shape.
- *   - processBatch receives generic EntityRow[]; the handler casts internally.
- */
 export interface BulkActionHandler<TPayload = unknown> {
   readonly actionType: string;
   readonly entityType: string;
 
   validatePayload(payload: unknown): TPayload;
 
-  /** Called once per job before any batch. Returns handler-owned state passed to every processBatch call. */
   createState?(): unknown;
 
   processBatch(

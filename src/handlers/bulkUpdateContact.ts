@@ -2,8 +2,6 @@ import { LogStatus } from "@prisma/client";
 import { z } from "zod";
 import type { BatchLogEntry, BulkActionHandler, EntityRow, HandlerContext } from "./types.js";
 
-// ── Contact-specific types ──────────────────────────────────────────
-
 type ContactEntity = EntityRow & {
   email: string;
   name: string;
@@ -14,8 +12,6 @@ type ContactEntity = EntityRow & {
 type ContactState = {
   seenEmails: Set<string>;
 };
-
-// ── Zod schemas (contact-specific validation) ───────────────────────
 
 const updatesFieldsSchema = z.object({
   name: z.string().min(1).optional(),
@@ -42,7 +38,12 @@ const payloadSchema = z.object({
 
 export type BulkUpdateContactPayload = z.infer<typeof payloadSchema>;
 
-// ── Helpers ─────────────────────────────────────────────────────────
+const UNIQUE_FIELDS = new Set(["email"]);
+
+
+function touchesUniqueField(updates: BulkUpdateContactPayload["updates"]): boolean {
+  return Object.keys(updates).some((k) => UNIQUE_FIELDS.has(k));
+}
 
 function resolveEmail(updates: BulkUpdateContactPayload["updates"], contact: ContactEntity): string {
   return (updates.email ?? contact.email ?? "").toLowerCase();
@@ -61,13 +62,14 @@ function isUniqueConstraintViolation(error: unknown): boolean {
   );
 }
 
-async function updateContact(
+async function updateContactPerRow(
   ctx: HandlerContext,
   contact: ContactEntity,
   payload: BulkUpdateContactPayload,
   state: ContactState,
 ): Promise<BatchLogEntry> {
   const shouldDedupe = payload.options?.dedupeByEmail === true;
+  // resolve the email after the update to check if it's a duplicate.
   const emailAfterUpdate = resolveEmail(payload.updates, contact);
 
   if (shouldDedupe && state.seenEmails.has(emailAfterUpdate)) {
@@ -76,10 +78,10 @@ async function updateContact(
 
   try {
     await ctx.entityRepository.update(contact.id, ctx.accountId, payload.updates as Record<string, unknown>);
-
     if (shouldDedupe) state.seenEmails.add(emailAfterUpdate);
     return logEntry(contact.id, LogStatus.SUCCESS);
   } catch (error) {
+    // if the error is a unique constraint violation, return a SKIPPED log entry.
     if (isUniqueConstraintViolation(error)) {
       return logEntry(contact.id, LogStatus.SKIPPED, "Email already exists for another contact in this account");
     }
@@ -88,7 +90,59 @@ async function updateContact(
   }
 }
 
-// ── Exported handler ────────────────────────────────────────────────
+/**
+ * Updates to unique fields require a database roundtrip per contact.
+ */
+async function processBatchPerRow(
+  ctx: HandlerContext,
+  contacts: ContactEntity[],
+  payload: BulkUpdateContactPayload,
+  state: ContactState,
+): Promise<BatchLogEntry[]> {
+  const logs: BatchLogEntry[] = [];
+  for (const contact of contacts) {
+    logs.push(await updateContactPerRow(ctx, contact, payload, state));
+  }
+  return logs;
+}
+
+/**
+ * Updates to non-unique fields can be batched together. saves a database roundtrip per contact.
+ */
+async function processBatchFast(
+  ctx: HandlerContext,
+  contacts: ContactEntity[],
+  payload: BulkUpdateContactPayload,
+  state: ContactState,
+): Promise<BatchLogEntry[]> {
+  const shouldDedupe = payload.options?.dedupeByEmail === true;
+
+  const eligible: ContactEntity[] = [];
+  const skipped: BatchLogEntry[] = [];
+
+  for (const contact of contacts) {
+    const email = resolveEmail(payload.updates, contact);
+    if (shouldDedupe && state.seenEmails.has(email)) {
+      skipped.push(logEntry(contact.id, LogStatus.SKIPPED, "Duplicate email within this bulk action"));
+    } else {
+      if (shouldDedupe) state.seenEmails.add(email);
+      eligible.push(contact);
+    }
+  }
+
+  if (eligible.length > 0) {
+    await ctx.entityRepository.updateMany(
+      ctx.accountId,
+      eligible.map((c) => c.id),
+      payload.updates as Record<string, unknown>,
+    );
+  }
+
+  return [
+    ...eligible.map((c) => logEntry(c.id, LogStatus.SUCCESS)),
+    ...skipped,
+  ];
+}
 
 export const bulkUpdateContactHandler: BulkActionHandler<BulkUpdateContactPayload> = {
   actionType: "bulk_update",
@@ -101,7 +155,7 @@ export const bulkUpdateContactHandler: BulkActionHandler<BulkUpdateContactPayloa
   createState(): ContactState {
     return { seenEmails: new Set<string>() };
   },
-
+  
   async processBatch(
     ctx: HandlerContext,
     entities: EntityRow[],
@@ -111,10 +165,10 @@ export const bulkUpdateContactHandler: BulkActionHandler<BulkUpdateContactPayloa
     const contactState = state as ContactState;
     const contacts = entities as ContactEntity[];
 
-    const logs: BatchLogEntry[] = [];
-    for (const contact of contacts) {
-      logs.push(await updateContact(ctx, contact, payload, contactState));
+    if (touchesUniqueField(payload.updates)) {
+      return processBatchPerRow(ctx, contacts, payload, contactState);
     }
-    return logs;
+
+    return processBatchFast(ctx, contacts, payload, contactState);
   },
 };

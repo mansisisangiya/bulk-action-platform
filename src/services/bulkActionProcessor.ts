@@ -121,6 +121,7 @@ type ProcessBatchParams = {
 
 type ProcessFilteredIdsParams = ProcessBatchParams & { sortedUniqueIds: string[] };
 
+// known ids + total count first to avoid scanning the entire table
 async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<void> {
   const { bulkActionId, handlerContext, entityRepository, sortedUniqueIds, batchSize, handler, validatedPayload, handlerState } =
     params;
@@ -134,6 +135,7 @@ async function processFilteredIds(params: ProcessFilteredIdsParams): Promise<voi
     const idChunk = sortedUniqueIds.slice(offset, offset + batchSize);
     const { skipLogs, entities } = await loadBatchForAccount(entityRepository, handlerContext.accountId, idChunk, handler.entityType);
 
+    // rate limit gate to avoid overwhelming the system
     await reserveCapacity(handlerContext.accountId, skipLogs.length + entities.length);
 
     if (skipLogs.length > 0) {
@@ -159,6 +161,7 @@ async function processFullScan(params: ProcessFullScanParams): Promise<void> {
   });
 
   let lastId: string | undefined;
+  // keyset pagination to avoid scanning the entire table
   while (true) {
     const page = await entityRepository.findPage(accountId, lastId, batchSize);
     if (page.length === 0) break;

@@ -238,7 +238,7 @@ Default limit: **10,000 entity operations per account per minute** (configurable
 ### 3.5 Scheduled Jobs
 
 When `scheduledAt` is provided:
-- If ≥ 5 minutes in the future → status is `SCHEDULED`, and BullMQ receives a `delay` in milliseconds.
+- If more than ~1.5 seconds in the future → status is `SCHEDULED`, and BullMQ receives a `delay` in milliseconds. (Times closer than this run immediately to avoid flaky sub-second delays.)
 - BullMQ holds the job in a `delayed` state and moves it to `waiting` at the scheduled time.
 - The `/health` endpoint exposes the `delayed` queue count, so a scheduler can observe upcoming work.
 
@@ -523,4 +523,3 @@ Horizontal API scaling (stateless, load-balanced):
 | **Pagination on List** | Cursor-based pagination on `GET /bulk-actions` (currently uses OFFSET) |
 | **Config Validation** | Validate all env vars at startup and fail fast with a clear error rather than crashing at runtime |
 | **Integration Tests** | Spin up real PostgreSQL + Redis in CI (e.g. via `testcontainers`) and run end-to-end flow tests |
-| **Graceful Shutdown** | Signal handling (`SIGTERM`) to drain in-flight batches before the worker process exits |

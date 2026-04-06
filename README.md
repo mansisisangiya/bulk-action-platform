@@ -2,6 +2,10 @@
 
 A scalable bulk action engine for CRM entities. Submit a request, get a job ID back instantly, and let the platform process thousands of entity updates asynchronously with real-time progress tracking, per-entity audit logs, per-account rate limiting, and scheduled execution.
 
+> **Loom Video walkthrough** 
+  [High level design demo](https://www.loom.com/share/a35a131a6dbd46d8affad795b9f3cc14)
+  [Endpoint Demo](https://www.loom.com/share/468ef46e520c48b49b15ffcb0f0d6704)
+
 > **Architecture deep-dive & design decisions** → [TECH_DESIGN.md](./docs/TECH_DESIGN.md)
 >
 > **Load test report (Artillery)** → [LOAD_TEST.md](./docs/LOAD_TEST.md)
